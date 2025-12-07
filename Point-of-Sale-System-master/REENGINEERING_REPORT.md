@@ -2097,6 +2097,753 @@ Payment_Interface ←──→ Cashier_Interface
     (Instantiate each other on completion)
 ```
 
+### 2.4 Extracted Data Structures
+
+#### 2.4.1 Entity Data Structures
+
+##### Employee Entity
+
+**Source:** `Employee.java`
+
+**Structure:**
+```java
+class Employee {
+    private String username;      // Employee ID (e.g., "110001")
+    private String name;          // Full name (e.g., "Harry Larry")
+    private String position;      // Role: "Admin" or "Cashier"
+    private String password;      // Plain text password
+    
+    // Constructor
+    Employee(String username, String name, String position, String password)
+    
+    // Getters/Setters
+    + getUsername(): String
+    + getName(): String
+    + getPosition(): String
+    + getPassword(): String
+    + setPassword(String): void
+}
+```
+
+**File Representation:** `employeeDatabase.txt`
+```
+Format: <username> <position> <firstName> <lastName> <password>
+Example: 110001 Admin Harry Larry 1
+```
+
+**Data Characteristics:**
+- **Key:** username (string, numeric format)
+- **Cardinality:** 12 employees in sample data
+- **Size:** ~50 bytes per record
+- **Relationships:** None (flat structure)
+- **Constraints:** None enforced
+- **Indexing:** None (sequential scan)
+
+**Issues Identified:**
+- No email or contact information
+- No employee status (active/inactive/suspended)
+- No hire date or employment history
+- Username is numeric but stored as string
+- Names cannot contain spaces (parsing limitation)
+- Password stored in plain text (critical security issue)
+
+---
+
+##### Item Entity
+
+**Source:** `Item.java`
+
+**Structure:**
+```java
+class Item {
+    private int itemID;           // Unique item identifier
+    private String itemName;      // Product name (no spaces allowed)
+    private double price;         // Unit price
+    private int amount;           // Quantity in stock
+    
+    // Constructor
+    Item(int itemID, String itemName, double price, int amount)
+    
+    // Methods
+    + getItemID(): int
+    + getItemName(): String
+    + getPrice(): double
+    + getAmount(): int
+    + updateAmount(int): void     // Set new quantity
+}
+```
+
+**File Representation:** `itemDatabase.txt`
+```
+Format: <itemID> <itemName> <price> <quantity>
+Example: 1000 Potato 1.0 249
+```
+
+**Data Characteristics:**
+- **Key:** itemID (integer)
+- **Cardinality:** 102 items (IDs 1000-1101)
+- **Size:** ~40 bytes per record
+- **Relationships:** Referenced by transactions, rentals
+- **Constraints:** None enforced
+- **Indexing:** None (linear search)
+
+**Issues Identified:**
+- No product category or department
+- No supplier information
+- No SKU/UPC/barcode
+- No reorder level or reorder quantity
+- No unit of measure (each, lb, kg, etc.)
+- Item names cannot contain spaces
+- No inventory location tracking
+- No cost price (only selling price)
+- No product description
+
+---
+
+##### ReturnItem Entity
+
+**Source:** `ReturnItem.java`
+
+**Structure:**
+```java
+class ReturnItem {
+    private int itemID;           // Item being returned
+    private String rentDate;      // Date when item was rented
+    private int days;             // Days item has been rented
+    
+    // Constructor
+    ReturnItem(int itemID, String rentDate)
+    
+    // Methods
+    + getItemID(): int
+    + getRentDate(): String
+    + getDays(): int
+    + setDays(int): void
+}
+```
+
+**File Representation:** Embedded in `userDatabase.txt`
+```
+Format: <itemID>,<rentDate>,<returnedBoolean>
+Example: 1000,6/30/09,true
+```
+
+**Data Characteristics:**
+- **Key:** None (composite of itemID + rentDate)
+- **Cardinality:** Unbounded (grows per customer)
+- **Size:** ~25 bytes per record
+- **Relationships:** Child of Customer/User, references Item
+- **Constraints:** None enforced
+- **Indexing:** None
+
+**Issues Identified:**
+- No unique identifier for rental transaction
+- Date format inconsistent (MM/DD/YY)
+- Days calculation done at runtime (not stored)
+- No rental price stored (assumes current item price)
+- No late fee tracking
+- Boolean stored as string "true"/"false"
+- No return date stored
+- Cannot distinguish multiple rentals of same item on same day
+
+---
+
+#### 2.4.2 Complex Data Structures
+
+##### Transaction Cart Structure
+
+**Source:** `PointOfSale.java`
+
+**In-Memory Structure:**
+```java
+class PointOfSale {
+    protected List<Item> transactionItem;    // Items in current cart
+    protected List<Item> databaseItem;       // All available items (reference)
+    protected double totalPrice;             // Running total
+    protected double tax = 1.06;             // Tax multiplier (6%)
+    protected float discount = 0.90f;        // Discount multiplier (10% off)
+}
+```
+
+**Data Flow:**
+1. Load `databaseItem` from file (read-only reference)
+2. User adds items → Copy from `databaseItem` to `transactionItem`
+3. Modify quantity in `transactionItem` copy
+4. On completion: Calculate totals, update inventory, write to file
+
+**Issues Identified:**
+- Entire inventory loaded into memory for each transaction
+- No transaction ID until completion
+- Tax and discount hardcoded as instance variables
+- Cannot support multiple currencies
+- No transaction status tracking
+- Cart is not persisted (except in temp.txt)
+
+---
+
+##### Customer Rental History Structure
+
+**Source:** `Management.java` + `userDatabase.txt`
+
+**File Format:**
+```
+<phoneNumber> <item1ID>,<rentDate>,<returned> <item2ID>,<rentDate>,<returned> ...
+```
+
+**Example Record:**
+```
+6096515668 1000,6/30/09,true 1022,6/31/11,true 1015,11/19/15,false
+```
+
+**Parsed Structure:**
+```java
+class CustomerRecord {
+    long phoneNumber;                        // Customer identifier
+    List<RentalTransaction> rentals;         // All rental history
+}
+
+class RentalTransaction {
+    int itemID;                              // Item rented
+    String rentDate;                         // Date of rental
+    boolean returned;                        // Return status
+}
+```
+
+**Data Characteristics:**
+- **Key:** phoneNumber (long, 10 digits)
+- **Cardinality:** 47 customers in sample data
+- **Line Length:** Variable (longest ~5000 characters)
+- **Relationships:** References Item via itemID
+- **Constraints:** None enforced
+- **Indexing:** None (linear file scan)
+
+**Critical Issues:**
+- **Unbounded line length** - One line per customer forever
+- **Data redundancy** - Historical rentals never archived
+- **Parse complexity** - Nested comma-separated values
+- **No customer name** - Phone is only identifier
+- **Duplicate phones** - Multiple customers with same number
+- **Invalid dates** - "6/31/11" (June has 30 days)
+- **No transaction grouping** - Cannot link items rented together
+- **No rental price stored** - Assumes current item price for late fees
+- **File corruption risk** - Single corrupted line loses all customer history
+
+**Performance Impact:**
+- Customer with 400 rentals = ~10KB in single line
+- Sequential scan O(n) for lookup
+- Entire file read for single customer
+- String parsing overhead
+
+---
+
+##### Coupon Collection Structure
+
+**Source:** `couponNumber.txt`
+
+**File Format:**
+```
+C001
+C002
+C003
+...
+C200
+```
+
+**In-Memory Structure:**
+```java
+List<String> couponCodes = new ArrayList<>();
+// Loaded via:
+while ((line = textReader.readLine()) != null) {
+    couponCodes.add(line.trim());
+}
+```
+
+**Validation Logic:**
+```java
+public boolean coupon(String couponNo) {
+    for (String code : couponCodes) {
+        if (code.equals(couponNo)) {
+            totalPrice *= discount;  // Apply 10% off
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+**Data Characteristics:**
+- **Key:** Coupon code (string, format C###)
+- **Cardinality:** 200 coupons
+- **Size:** 5 bytes per code
+- **Discount:** Hardcoded 10% in PointOfSale.java
+- **Expiration:** None
+- **Usage Tracking:** None
+
+**Issues Identified:**
+- No discount amount stored (hardcoded)
+- No expiration date
+- No usage limit (infinite use)
+- No coupon description
+- No minimum purchase requirement
+- Linear search O(n) for validation
+- Cannot disable individual coupons
+- No audit trail of coupon usage
+
+---
+
+##### Transaction Temporary Recovery Structure
+
+**Source:** `temp.txt`
+
+**File Format:**
+```
+<transactionType>
+[<phoneNumber>]        (only for Rental/Return)
+<itemID> <amount>
+<itemID> <amount>
+...
+```
+
+**Example 1 - Sale:**
+```
+Sale
+1000 5
+1002 2
+```
+
+**Example 2 - Rental:**
+```
+Rental
+6096515668
+1000 5
+1015 1
+```
+
+**Parsed Structure:**
+```java
+class TempTransaction {
+    String type;           // "Sale", "Rental", or "Return"
+    long phoneNumber;      // Optional (0 for sale)
+    List<TempItem> items;  // Items in cart
+}
+
+class TempItem {
+    int itemID;
+    int quantity;
+}
+```
+
+**Recovery Logic:**
+```java
+if (checkTemp()) {  // temp.txt exists
+    String type = readFirstLine();
+    if (type.equals("Rental") || type.equals("Return")) {
+        phone = readSecondLine();
+    }
+    // Restore cart items...
+}
+```
+
+**Critical Issues:**
+- **Single transaction only** - Cannot recover multiple crashes
+- **Overwrites on start** - New transaction destroys old temp
+- **No timestamp** - Cannot determine age of temp file
+- **Deleted on success** - Cannot recover if delete fails mid-operation
+- **Not atomic** - Crash during write = corrupted file
+- **No customer info for sales** - Cannot contact customer
+- **No payment status** - Unknown if payment was collected
+
+---
+
+#### 2.4.3 File-Based Data Structures
+
+##### Employee Database File
+
+**Path:** `Database/employeeDatabase.txt`
+
+**Format Specification:**
+```
+Field 1: username (string, numeric format)
+Field 2: position ("Admin" or "Cashier")
+Field 3: firstName (string, no spaces)
+Field 4: lastName (string, no spaces)
+Field 5: password (string, no spaces)
+
+Delimiter: Single space
+Line Terminator: System line separator
+```
+
+**Sample Data:**
+```
+110001 Admin Harry Larry 1
+110002 Cashier Debra Cooper lehigh2016
+110003 Admin Clayton Watson lehigh2017
+110004 Cashier Kathryn Garcia thatswhatshesaid
+110005 Admin David Johnson lehigh2018
+```
+
+**Schema Analysis:**
+```
+┌──────────┬──────────┬────────────┬────────────┬────────────┐
+│ username │ position │ firstName  │ lastName   │ password   │
+├──────────┼──────────┼────────────┼────────────┼────────────┤
+│ STRING   │ ENUM     │ STRING     │ STRING     │ STRING     │
+│ PK       │ NOT NULL │ NOT NULL   │ NOT NULL   │ NOT NULL   │
+│ 6 chars  │ 5-7 char │ Variable   │ Variable   │ Variable   │
+└──────────┴──────────┴────────────┴────────────┴────────────┘
+```
+
+**Data Quality Issues:**
+- No email field
+- No phone number
+- No address
+- No hire date
+- No salary/wage
+- Plain text passwords
+- No status field (active/inactive)
+
+---
+
+##### Item Database File
+
+**Path:** `Database/itemDatabase.txt`
+
+**Format Specification:**
+```
+Field 1: itemID (integer)
+Field 2: itemName (string, no spaces)
+Field 3: price (double, 2 decimal places)
+Field 4: quantity (integer)
+
+Delimiter: Single space
+Line Terminator: System line separator
+```
+
+**Sample Data:**
+```
+1000 Potato 1.0 249
+1001 PlasticCup 0.5 376
+1002 SkirtSteak 15.0 1055
+1003 Milk 3.5 82
+```
+
+**Schema Analysis:**
+```
+┌──────────┬────────────┬────────────┬────────────┐
+│ itemID   │ itemName   │ price      │ quantity   │
+├──────────┼────────────┼────────────┼────────────┤
+│ INTEGER  │ STRING     │ DOUBLE     │ INTEGER    │
+│ PK       │ NOT NULL   │ >= 0.0     │ >= 0       │
+│ 4 digits │ Variable   │ 2 decimals │ Variable   │
+└──────────┴────────────┴────────────┴────────────┘
+```
+
+**Data Range Statistics:**
+- Item IDs: 1000-1101 (102 items)
+- Price Range: $0.50 - $15.00
+- Quantity Range: 9 - 9001 units
+- Name Length: 4-15 characters
+
+---
+
+##### User/Customer Database File
+
+**Path:** `Database/userDatabase.txt`
+
+**Format Specification:**
+```
+Header Line: "Phone number rentedItem1ID,rentedItem1Date,returned1Bool ..."
+Data Lines: <phoneNumber> <itemID>,<rentDate>,<returned> [<itemID>,<rentDate>,<returned>...]
+
+Delimiter: Space between phone and rentals, comma within rental records
+Line Terminator: System line separator
+```
+
+**Sample Data:**
+```
+Phone number rentedItem1ID,rentedItem1Date,returned1Bool rentedItem2ID,rentedItem2Date,returned2Bool...etc
+6096515668 1000,6/30/09,true 1022,6/31/11,true
+1111112222 1010,11/19/15,false
+5555555555 1000,1/1/15,true 1001,1/1/15,true 1002,1/2/15,false
+```
+
+**Schema Analysis:**
+```
+Customer Record:
+┌──────────────┬────────────────────────────────────────┐
+│ phoneNumber  │ rentalHistory (repeating group)        │
+├──────────────┼────────────────────────────────────────┤
+│ LONG         │ List<Rental>                           │
+│ PK           │ Unbounded                              │
+│ 10 digits    │ Format: itemID,date,returned           │
+└──────────────┴────────────────────────────────────────┘
+
+Rental Record (embedded):
+┌──────────┬─────────────┬───────────┐
+│ itemID   │ rentDate    │ returned  │
+├──────────┼─────────────┼───────────┤
+│ INTEGER  │ STRING      │ BOOLEAN   │
+│ FK       │ MM/DD/YY    │ STRING    │
+└──────────┴─────────────┴───────────┘
+```
+
+**Data Complexity:**
+- **Worst Case Line:** 5000+ characters (400 rental records)
+- **Average Rentals/Customer:** 8-12 rentals
+- **Date Format Issues:** Inconsistent (6/30/09 vs 11/19/15)
+- **Invalid Data:** "6/31/11" (June has 30 days)
+
+**Denormalization Issues:**
+- Violates 1NF (repeating groups)
+- Violates 2NF (no atomic values)
+- Violates 3NF (transitive dependencies)
+- No separate Rental table
+- No separate Customer table
+
+---
+
+##### Sale Invoice Record File
+
+**Path:** `Database/saleInvoiceRecord.txt`
+
+**Format Specification:**
+```
+<timestamp>
+<itemID> <itemName> <quantity> <lineTotal>
+[more items...]
+Total with tax: <total>
+<blank line>
+```
+
+**Sample Data:**
+```
+2015-12-09 14:30:00.000
+1000 Potato 5 5.0
+1002 SkirtSteak 2 30.0
+Total with tax: 37.1
+
+2015-12-09 15:45:12.500
+1001 PlasticCup 10 5.0
+Total with tax: 5.3
+
+```
+
+**Schema Analysis:**
+```
+Transaction Record:
+┌─────────────────────┬────────────────────────────┐
+│ timestamp           │ lineItems (repeating)      │
+├─────────────────────┼────────────────────────────┤
+│ DATETIME            │ List<LineItem>             │
+│ YYYY-MM-DD HH:MM:SS │ Variable count             │
+└─────────────────────┴────────────────────────────┘
+
+Line Item (embedded):
+┌──────────┬────────────┬──────────┬────────────┐
+│ itemID   │ itemName   │ quantity │ lineTotal  │
+├──────────┼────────────┼──────────┼────────────┤
+│ INTEGER  │ STRING     │ INTEGER  │ DOUBLE     │
+└──────────┴────────────┴──────────┴────────────┘
+
+Total Line:
+┌─────────────────────────────┐
+│ "Total with tax: <amount>"  │
+└─────────────────────────────┘
+```
+
+**Missing Data:**
+- No transaction ID
+- No employee ID who processed sale
+- No customer information
+- No payment method
+- No subtotal before tax
+- No discount applied
+- No coupon code used
+- No session/register ID
+
+**Query Limitations:**
+- Cannot query by date efficiently (sequential scan)
+- Cannot query by employee
+- Cannot query by customer
+- Cannot query by item sold
+- Cannot calculate daily/monthly totals without full scan
+
+---
+
+##### Employee Log File
+
+**Path:** `Database/employeeLogfile.txt`
+
+**Format Specification:**
+```
+<name> (<username> <position>) logs into/out of POS System. Time: <timestamp>
+
+Where:
+  name: firstName lastName
+  username: Employee ID
+  position: Admin or Cashier
+  timestamp: YYYY-MM-DD HH:MM:SS.mmm
+```
+
+**Sample Data:**
+```
+Harry Larry (110001 Admin) logs into POS System. Time: 2015-12-09 14:23:45.123
+Harry Larry (110001 Admin) logs out of POS System. Time: 2015-12-09 16:15:22.456
+Debra Cooper (110002 Cashier) logs into POS System. Time: 2015-12-09 16:20:00.789
+```
+
+**Schema Analysis:**
+```
+┌────────────┬──────────┬──────────┬────────┬─────────────────────┐
+│ name       │ username │ position │ action │ timestamp           │
+├────────────┼──────────┼──────────┼────────┼─────────────────────┤
+│ STRING     │ STRING   │ ENUM     │ ENUM   │ DATETIME            │
+│            │ FK       │          │ in/out │ YYYY-MM-DD HH:MM:SS │
+└────────────┴──────────┴──────────┴────────┴─────────────────────┘
+```
+
+**Limitations:**
+- No session ID (cannot pair login with logout)
+- No client IP or machine identifier
+- No failed login attempts
+- No action logging (only login/logout)
+- No log rotation (grows indefinitely)
+- Difficult to parse (free-form text)
+
+---
+
+#### 2.4.4 Data Structure Relationships
+
+**Entity Relationship Diagram (Current System):**
+
+```
+┌─────────────────┐
+│    Employee     │
+│─────────────────│
+│ PK username     │────┐
+│    name         │    │
+│    position     │    │ (implicit, not enforced)
+│    password     │    │
+└─────────────────┘    │
+                       │ "processes"
+                       │
+┌─────────────────┐    │    ┌─────────────────┐
+│      Item       │    │    │   Transaction   │
+│─────────────────│    │    │─────────────────│
+│ PK itemID       │◄───┼────│ (no ID)         │
+│    itemName     │    │    │   timestamp     │
+│    price        │    └───►│   employeeId(?) │ (not stored)
+│    quantity     │         │   items[]       │
+└─────────────────┘         │   total         │
+        ▲                   └─────────────────┘
+        │
+        │ "rented by"
+        │
+┌─────────────────┐         ┌─────────────────┐
+│    Customer     │         │     Rental      │
+│─────────────────│         │─────────────────│
+│ PK phoneNumber  │◄────────│ PK (none)       │
+│   (no name)     │ 1    * │ FK phoneNumber  │
+└─────────────────┘         │ FK itemID       │
+                            │    rentDate     │
+                            │    returned     │
+                            └─────────────────┘
+                                    │
+                                    │ (references)
+                                    │
+                            ┌───────▼─────────┐
+                            │      Item       │
+                            └─────────────────┘
+```
+
+**Relationship Cardinalities:**
+- Employee → Transaction: 1 to Many (not enforced, no FK)
+- Transaction → Item: Many to Many (no junction table)
+- Customer → Rental: 1 to Many (embedded, not separate table)
+- Rental → Item: Many to 1 (FK exists but not enforced)
+
+**Referential Integrity Issues:**
+- No foreign key constraints
+- Orphaned rentals possible (if item deleted)
+- Cannot query "all transactions by employee"
+- Cannot query "all customers who rented item X"
+- Cascading deletes not possible
+
+---
+
+#### 2.4.5 Data Structure Quality Assessment
+
+##### Normalization Analysis
+
+**Current State: Denormalized (0NF - 1NF)**
+
+| Entity | 1NF | 2NF | 3NF | Issues |
+|--------|-----|-----|-----|--------|
+| Employee | ✅ Yes | ✅ Yes | ✅ Yes | Atomic values, no repeating groups |
+| Item | ✅ Yes | ✅ Yes | ✅ Yes | Properly normalized |
+| Customer/Rental | ❌ No | ❌ No | ❌ No | Repeating groups, non-atomic rental history |
+| Transaction | ❌ No | ❌ No | ❌ No | No identity, embedded line items |
+| Coupon | ⚠️ Partial | ❌ No | ❌ No | List only, no attributes, discount is separate |
+
+**Normalization Violations:**
+
+1. **1NF Violation (userDatabase.txt):**
+   - Repeating groups: Multiple rentals in single record
+   - Non-atomic values: "1000,6/30/09,true" as single field
+
+2. **2NF Violation (saleInvoiceRecord.txt):**
+   - Partial key dependency: Line items depend on transaction + item
+   - No composite key defined
+
+3. **3NF Violation:**
+   - Transitive dependency: Item name stored in transaction record
+   - Should reference Item.itemID only
+
+---
+
+##### Data Integrity Assessment
+
+| Constraint Type | Implementation | Issues |
+|----------------|----------------|--------|
+| **Primary Key** | ❌ Not enforced | Duplicates possible |
+| **Foreign Key** | ❌ Not enforced | Orphaned records, referential integrity violated |
+| **Unique** | ❌ Not enforced | Duplicate phone numbers exist |
+| **Not Null** | ❌ Not enforced | Empty fields cause parse errors |
+| **Check** | ❌ Not enforced | Invalid dates ("6/31/11"), negative quantities |
+| **Default** | ❌ Not enforced | No default values |
+
+**Data Quality Issues Found:**
+- Invalid dates: 6/31/11 (June has 30 days)
+- Duplicate phone numbers: 6096515668 appears twice
+- Negative quantities: None found but not prevented
+- Missing data: Empty employee names would crash parser
+- Inconsistent formats: Date format varies (M/D/YY vs MM/DD/YYYY)
+
+---
+
+##### Performance Impact Analysis
+
+| Data Structure | Size | Access Pattern | Performance | Scalability |
+|---------------|------|----------------|-------------|-------------|
+| Employee | 12 records, <1KB | Sequential scan | O(n) - Fast | Good to 1000s |
+| Item | 102 records, ~4KB | Sequential scan | O(n) - Fast | Poor at 10,000+ |
+| Customer/Rental | 47 customers, ~50KB | Sequential scan + parse | O(n × m) - Slow | Very Poor |
+| Transaction | Unbounded, append | Append only | O(1) write | Grows forever |
+| Coupon | 200 records, <1KB | Sequential scan | O(n) - Fast | Good |
+
+**Bottlenecks Identified:**
+1. **Customer Lookup:** O(n) file scan + O(m) rental parse = O(n × m)
+2. **Item Search:** O(n) for each item lookup in transaction
+3. **Transaction History:** Must scan entire file to find date range
+4. **Inventory Update:** Read entire file, modify, write entire file
+
+**Estimated Breaking Points:**
+- 1,000 items: Item lookup becomes noticeable (100ms)
+- 10,000 rentals: Customer lookup becomes unacceptable (2-5 seconds)
+- 100,000 transactions: Report generation impossible (minutes)
+
+---
+
 ### 2.4 Data Structure Analysis
 
 #### 2.4.1 Entity Relationship Diagram (Logical)
